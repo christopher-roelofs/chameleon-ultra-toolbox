@@ -5,9 +5,24 @@ body {
     margin: 0;
     padding: 20px;
     padding-bottom: 40px;
-    overflow: hidden;
-    height: 100vh;
     box-sizing: border-box;
+    -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 1025px) {
+    body {
+        overflow: hidden;
+        height: 100vh;
+    }
+}
+
+@media (max-width: 1024px) {
+    body {
+        overflow-y: scroll !important;
+        height: auto !important;
+        min-height: 100vh;
+        position: relative;
+    }
 }
 
 /* Side-by-side layout */
@@ -17,8 +32,13 @@ body {
     margin-top: 15px;
     margin-bottom: 20px;
     align-items: stretch;
-    height: calc(100vh - 220px);
-    overflow: hidden;
+}
+
+@media (min-width: 1025px) {
+    .main-layout {
+        height: calc(100vh - 220px);
+        overflow: hidden;
+    }
 }
 
 .left-panel {
@@ -38,12 +58,60 @@ body {
 
 /* Responsive: stack vertically on small screens */
 @media (max-width: 1024px) {
-    .main-layout {
-        flex-direction: column;
+    html, body {
+        height: auto;
+        min-height: 100vh;
     }
 
-    .right-panel {
+    .main-layout {
+        display: block;
+        height: auto;
+    }
+
+    .right-panel,
+    .left-panel {
+        display: block;
         width: 100%;
+        height: auto;
+    }
+
+    .tab-content.active {
+        display: block;
+        height: auto;
+    }
+
+    .section {
+        display: block;
+        height: auto;
+    }
+
+    .file-tree,
+    .extensions-list {
+        max-height: 400px;
+        min-height: 200px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .editor-container {
+        height: 400px;
+    }
+
+    .CodeMirror {
+        height: 100%;
+    }
+
+    .console-wrapper {
+        display: block;
+        height: auto;
+        min-height: 400px;
+    }
+
+    #console-container {
+        max-height: 300px;
+        min-height: 200px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
     }
 }
 
@@ -526,11 +594,14 @@ button.danger:hover {
     flex: 1;
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
 
 .CodeMirror {
     height: 100%;
     font-size: 14px;
+    flex: 1;
+    min-height: 0;
 }
 
 .CodeMirror-hints {

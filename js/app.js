@@ -2110,7 +2110,7 @@
                     },
                     {
                         text: '🗑️ Reset Filesystem',
-                        className: 'danger',
+                        className: 'btn-danger',
                         onClick: async () => {
                             try {
                                 logToConsole('Resetting filesystem...');
@@ -2120,7 +2120,7 @@
                                     fs.db.close();
                                 }
 
-                                const deleteRequest = indexedDB.deleteDatabase('ChameleonFS');
+                                const deleteRequest = indexedDB.deleteDatabase('UltraToolboxFS');
 
                                 deleteRequest.onsuccess = async () => {
                                     logToConsole('✓ Filesystem deleted');
@@ -2128,6 +2128,9 @@
 
                                     // Reinitialize filesystem
                                     await initFileSystem();
+
+                                    // Refresh the file tree display
+                                    await refreshFileTree();
 
                                     logToConsole('✓ Filesystem reset complete');
                                 };
