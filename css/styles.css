@@ -604,6 +604,19 @@ button.danger:hover {
     min-height: 0;
 }
 
+.CodeMirror-code {
+    padding-left: 4px;
+}
+
+.CodeMirror-linenumber {
+    min-width: 30px;
+    padding-right: 8px;
+}
+
+.CodeMirror-gutters {
+    min-width: 38px;
+}
+
 .CodeMirror-hints {
     background: #2d2d30;
     color: #d4d4d4;

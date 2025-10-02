@@ -710,6 +710,9 @@
             // Mark editor as initialized
             editorInitialized = true;
 
+            // Force refresh to ensure proper gutter rendering
+            setTimeout(() => codeEditor.refresh(), 100);
+
             // Load saved editor content (unless disabled or URL parameter present)
             const disableAutoRestore = localStorage.getItem('chameleonDisableAutoRestore') === 'true';
 
@@ -724,9 +727,14 @@
                     codeEditor.setValue(savedContent);
                     document.getElementById('scriptName').value = savedName;
                     logToConsole('ℹ️  Restored previous session (click "📄 New" to start fresh)');
+                } else {
+                    // Initialize with empty string to ensure gutters render properly
+                    codeEditor.setValue('');
                 }
             } else if (disableAutoRestore) {
                 logToConsole('ℹ️  Auto-restore disabled');
+                // Initialize with empty string to ensure gutters render properly
+                codeEditor.setValue('');
             } else if (hasURLScript) {
                 logToConsole('ℹ️  Loading script from URL...');
             }
@@ -745,6 +753,9 @@
                 refreshFileTree();
             } else if (tabName === 'extensions') {
                 refreshExtensions();
+            } else if (tabName === 'editor' && codeEditor) {
+                // Refresh CodeMirror when switching to editor tab to fix gutter rendering
+                setTimeout(() => codeEditor.refresh(), 10);
             }
         }
         window.switchTab = switchTab;
@@ -829,8 +840,12 @@
             actions.className = 'actions';
 
             if (node.type !== 'directory') {
-                // Only show Run button for .js files
-                if (node.name.endsWith('.js')) {
+                // Show Run button for .js, .py, and .lua files
+                const isRunnable = node.name.endsWith('.js') ||
+                                 node.name.endsWith('.py') ||
+                                 node.name.endsWith('.lua');
+
+                if (isRunnable) {
                     const runBtn = document.createElement('button');
                     runBtn.className = 'action-btn';
                     runBtn.textContent = '▶';
@@ -884,7 +899,7 @@
 
             // Double-click handler - open text files in editor
             if (node.type !== 'directory') {
-                const textExtensions = ['.js', '.txt', '.md', '.json', '.html', '.css', '.xml', '.csv', '.log'];
+                const textExtensions = ['.js', '.py', '.lua', '.txt', '.md', '.json', '.html', '.css', '.xml', '.csv', '.log'];
                 const isTextFile = textExtensions.some(ext => node.name.toLowerCase().endsWith(ext));
 
                 if (isTextFile) {
@@ -1160,6 +1175,32 @@
             }
         }
 
+        // Helper function to detect and set CodeMirror mode based on file extension
+        function setEditorModeByFilename(filename) {
+            let mode = 'javascript'; // default
+            let modeLabel = 'JavaScript';
+
+            if (filename.endsWith('.py')) {
+                mode = 'python';
+                modeLabel = 'Python';
+            } else if (filename.endsWith('.lua')) {
+                mode = 'lua';
+                modeLabel = 'Lua';
+            } else if (filename.endsWith('.js')) {
+                mode = 'javascript';
+                modeLabel = 'JavaScript';
+            } else if (filename.endsWith('.json')) {
+                mode = { name: 'javascript', json: true };
+                modeLabel = 'JSON';
+            } else if (filename.endsWith('.md')) {
+                mode = 'markdown';
+                modeLabel = 'Markdown';
+            }
+
+            codeEditor.setOption('mode', mode);
+            logToConsole(`📝 Editor mode: ${modeLabel}`);
+        }
+
         async function editFileFromFS(path) {
             try {
                 const content = await fs.readFile(path);
@@ -1169,6 +1210,10 @@
 
                 // Store the path so we can save back to VFS
                 codeEditor._currentVFSPath = path;
+
+                // Set syntax highlighting based on file type
+                const filename = path.substring(path.lastIndexOf('/') + 1);
+                setEditorModeByFilename(filename);
 
                 // Refresh CodeMirror to display content immediately
                 setTimeout(() => codeEditor.refresh(), 10);
@@ -1252,15 +1297,65 @@
                 return;
             }
 
-            try {
-                logToConsole(`▶ Running editor script...`);
-                const scriptFunc = new Function(code);
-                const result = scriptFunc.call(window);
+            // Get filename and detect extension
+            const scriptName = document.getElementById('scriptName').value.trim();
 
-                // Handle async functions
-                if (result && typeof result.then === 'function') {
-                    await result;
+            // Extract extension from filename
+            const lastDot = scriptName.lastIndexOf('.');
+            const hasExtension = lastDot > 0 && lastDot < scriptName.length - 1;
+
+            if (!hasExtension) {
+                logToConsole('❌ Please add a file extension (.js, .py, or .lua)', true);
+                return;
+            }
+
+            const extension = scriptName.substring(lastDot).toLowerCase();
+
+            try {
+                // Python files
+                if (extension === '.py') {
+                    if (!window.pyodideReady) {
+                        logToConsole('⚠️ Pyodide not ready. Please wait for initialization...', true);
+                        return;
+                    }
+                    logToConsole(`🐍 Running Python script...`);
+                    logToConsole('─'.repeat(60));
+                    await window.pyodide.runPythonAsync(code);
+                    logToConsole('─'.repeat(60));
+                    logToConsole('✓ Python script completed');
+                    return;
                 }
+
+                // Lua files
+                if (extension === '.lua') {
+                    if (!window.luaReady) {
+                        logToConsole('⚠️ Lua not ready. Please wait for initialization...', true);
+                        return;
+                    }
+                    logToConsole(`🌙 Running Lua script...`);
+                    logToConsole('─'.repeat(60));
+                    await window.lua.doString(code);
+                    logToConsole('─'.repeat(60));
+                    logToConsole('✓ Lua script completed');
+                    return;
+                }
+
+                // JavaScript files
+                if (extension === '.js') {
+                    logToConsole(`▶ Running JavaScript script...`);
+                    const scriptFunc = new Function(code);
+                    const result = scriptFunc.call(window);
+
+                    // Handle async functions
+                    if (result && typeof result.then === 'function') {
+                        await result;
+                    }
+                    return;
+                }
+
+                // Unsupported extension
+                logToConsole(`❌ Unsupported file type: ${extension}. Use .js, .py, or .lua`, true);
+
             } catch (error) {
                 logToConsole(`❌ Error: ${error.message}`, true);
                 console.error(error);
