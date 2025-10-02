@@ -2043,10 +2043,6 @@
                     logToConsole('  hw slot details [n] - Show detailed info for slot N (or current)');
                     logToConsole('  hw slot change <n>  - Change to slot N (1-8)');
                     logToConsole('');
-                    logToConsole('  hf 14a scan         - Scan for ISO14443-A tags');
-                    logToConsole('  hf 14a info         - Get detailed tag info');
-                    logToConsole('  hf mf rdbl <block>  - Read MIFARE Classic block');
-                    logToConsole('');
                     logToConsole('  Shell commands:');
                     logToConsole('  ls [path]           - List files and directories');
                     logToConsole('  cd <dir>            - Change directory (supports .., /, relative paths)');
@@ -2455,73 +2451,6 @@
                     }
                 } else {
                     logToConsole(`Unknown hw subcommand: ${subcmd}`, true);
-                }
-                return;
-            }
-
-            // High Frequency commands (hf)
-            if (cmd === 'hf') {
-                if (!argv[1]) {
-                    logToConsole('Usage: hf <14a|mf|mfu> <subcommand>');
-                    return;
-                }
-
-                const subcmd = argv[1].toLowerCase();
-
-                if (subcmd === '14a') {
-                    if (!argv[2]) {
-                        logToConsole('Usage: hf 14a <scan|info>');
-                        return;
-                    }
-                    if (!chameleonUltra) {
-                        logToConsole('Not connected. Use: hw connect', true);
-                        return;
-                    }
-
-                    const action = argv[2].toLowerCase();
-                    if (action === 'scan') {
-                        logToConsole('Scanning for ISO14443-A tags...');
-                        const result = await chameleonUltra.cmd(0x2000);
-                        if (result.status === 0x68) {
-                            const uid = Array.from(result.data.slice(0, result.data[4])).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-                            logToConsole(`✓ Tag found: ${uid}`);
-                        } else {
-                            logToConsole('No tag detected', true);
-                        }
-                    } else if (action === 'info') {
-                        logToConsole('Getting tag info...');
-                        const result = await chameleonUltra.cmd(0x2000);
-                        if (result.status === 0x68) {
-                            const uidLen = result.data[4];
-                            const uid = Array.from(result.data.slice(0, uidLen)).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-                            const atqa = Array.from(result.data.slice(uidLen, uidLen + 2)).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-                            const sak = result.data[uidLen + 2].toString(16).padStart(2, '0').toUpperCase();
-                            logToConsole(`UID:  ${uid}`);
-                            logToConsole(`ATQA: ${atqa}`);
-                            logToConsole(`SAK:  ${sak}`);
-                        } else {
-                            logToConsole('No tag detected', true);
-                        }
-                    }
-                } else if (subcmd === 'mf') {
-                    if (!argv[2]) {
-                        logToConsole('Usage: hf mf <rdbl> <block>');
-                        return;
-                    }
-                    if (!chameleonUltra) {
-                        logToConsole('Not connected. Use: hw connect', true);
-                        return;
-                    }
-                    const action = argv[2].toLowerCase();
-                    if (action === 'rdbl') {
-                        if (!argv[3]) {
-                            logToConsole('Usage: hf mf rdbl <block>');
-                            return;
-                        }
-                        const block = parseInt(argv[3]);
-                        logToConsole(`Reading block ${block}...`);
-                        logToConsole('(Command implementation pending)');
-                    }
                 }
                 return;
             }
