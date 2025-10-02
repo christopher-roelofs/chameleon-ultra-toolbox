@@ -2063,11 +2063,12 @@
                     logToConsole('  fs rm <file>        - Delete file');
                     logToConsole('');
                     logToConsole('  clear               - Clear console');
+                    logToConsole('  reset               - Reset filesystem (deletes all files)');
                     logToConsole('  help                - Show this help');
 
                     // Show extension commands
                     const extensionCommands = Object.keys(commands).filter(cmd =>
-                        !['help', 'clear'].includes(cmd)
+                        !['help', 'clear', 'reset'].includes(cmd)
                     );
                     if (extensionCommands.length > 0) {
                         logToConsole('');
