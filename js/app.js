@@ -1624,7 +1624,7 @@
         }, 5000);
 
         // Check if script was shared via URL
-        function loadScriptFromURL() {
+        async function loadScriptFromURL() {
             const urlParams = new URLSearchParams(window.location.search);
             const sharedScript = urlParams.get('script');
             const loadFile = urlParams.get('load'); // Support loading external files
@@ -1634,13 +1634,21 @@
                     // Decode base64 (URLSearchParams already handles URL decoding)
                     const binaryString = atob(sharedScript);
 
-                    // Convert binary string to UTF-8 using TextDecoder
-                    const bytes = new Uint8Array(binaryString.length);
+                    // Convert binary string to Uint8Array
+                    const compressedBytes = new Uint8Array(binaryString.length);
                     for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
+                        compressedBytes[i] = binaryString.charCodeAt(i);
                     }
+
+                    // Decompress using DecompressionStream
+                    const decompressedStream = new Response(
+                        new Blob([compressedBytes]).stream().pipeThrough(new DecompressionStream('gzip'))
+                    );
+                    const decompressedData = await decompressedStream.arrayBuffer();
+
+                    // Convert to UTF-8 string
                     const decoder = new TextDecoder();
-                    const decoded = decoder.decode(bytes);
+                    const decoded = decoder.decode(decompressedData);
                     const scriptData = JSON.parse(decoded);
 
                     // Load into editor
@@ -1694,7 +1702,7 @@
         }
 
         // Share script via URL
-        function shareViaURL() {
+        async function shareViaURL() {
             const code = codeEditor.getValue();
             const name = document.getElementById('scriptName').value;
 
@@ -1704,23 +1712,39 @@
             }
 
             const scriptData = { name, code };
-            // Use TextEncoder for proper Unicode handling
+            const jsonString = JSON.stringify(scriptData);
+
+            // Compress using gzip
             const encoder = new TextEncoder();
-            const data = encoder.encode(JSON.stringify(scriptData));
-            // Convert bytes to binary string (only use lower byte of each value)
+            const data = encoder.encode(jsonString);
+
+            // Use CompressionStream for gzip compression
+            const compressedStream = new Response(
+                new Blob([data]).stream().pipeThrough(new CompressionStream('gzip'))
+            );
+            const compressedData = new Uint8Array(await compressedStream.arrayBuffer());
+
+            // Convert to binary string for base64 encoding
             let binaryString = '';
-            for (let i = 0; i < data.length; i++) {
-                binaryString += String.fromCharCode(data[i]);
+            for (let i = 0; i < compressedData.length; i++) {
+                binaryString += String.fromCharCode(compressedData[i]);
             }
             const encoded = btoa(binaryString);
-            // URL-encode the base64 string to handle +, /, = characters
             const urlSafe = encodeURIComponent(encoded);
             const shareURL = `${window.location.origin}${window.location.pathname}?script=${urlSafe}`;
+
+            // Check if URL is too long (most servers support up to 8000, but be conservative)
+            if (shareURL.length > 6000) {
+                const compressRatio = ((1 - (compressedData.length / data.length)) * 100).toFixed(1);
+                logToConsole(`⚠️ Script too large for URL sharing (${shareURL.length} chars, ${compressRatio}% compression)`, true);
+                logToConsole('💡 Tip: Use "💾 Save" to save to filesystem instead.', false);
+                return;
+            }
 
             // Copy to clipboard
             navigator.clipboard.writeText(shareURL).then(() => {
                 logToConsole('✓ Share link copied to clipboard!');
-                logToConsole(`📋 ${shareURL.substring(0, 80)}...`);
+                logToConsole(`📋 ${shareURL.substring(0, 80)}... (${shareURL.length} chars)`);
             }).catch(() => {
                 // Fallback: show URL for manual copy
                 logToConsole('📋 Share URL:');
@@ -1729,7 +1753,7 @@
         }
 
         // Share via QR Code
-        function shareViaQR() {
+        async function shareViaQR() {
             const code = codeEditor.getValue();
             const name = document.getElementById('scriptName').value;
 
@@ -1739,16 +1763,23 @@
             }
 
             const scriptData = { name, code };
-            // Use TextEncoder for proper Unicode handling
+            const jsonString = JSON.stringify(scriptData);
+
+            // Compress using gzip
             const encoder = new TextEncoder();
-            const data = encoder.encode(JSON.stringify(scriptData));
-            // Convert bytes to binary string (only use lower byte of each value)
+            const data = encoder.encode(jsonString);
+
+            const compressedStream = new Response(
+                new Blob([data]).stream().pipeThrough(new CompressionStream('gzip'))
+            );
+            const compressedData = new Uint8Array(await compressedStream.arrayBuffer());
+
+            // Convert to binary string for base64 encoding
             let binaryString = '';
-            for (let i = 0; i < data.length; i++) {
-                binaryString += String.fromCharCode(data[i]);
+            for (let i = 0; i < compressedData.length; i++) {
+                binaryString += String.fromCharCode(compressedData[i]);
             }
             const encoded = btoa(binaryString);
-            // URL-encode the base64 string to handle +, /, = characters
             const urlSafe = encodeURIComponent(encoded);
             const shareURL = `${window.location.origin}${window.location.pathname}?script=${urlSafe}`;
 
