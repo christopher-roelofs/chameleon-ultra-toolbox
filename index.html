@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChameleonUltra Toolbox</title>
+
+    <!-- CodeMirror CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.css">
+
+    <!-- Application CSS -->
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <h1>ChameleonUltra Toolbox</h1>
+
+    <!-- Hidden legacy elements for backward compatibility -->
+    <input type="file" id="fileInput" accept=".js" multiple style="display: none;">
+    <ul id="scriptsList" style="display: none;"></ul>
+
+    <div class="header-bar">
+        <div class="tab-buttons">
+            <button class="tab-button active" onclick="switchTab('files')">📂 File Explorer</button>
+            <button class="tab-button" onclick="switchTab('editor')">✏️ Script Editor</button>
+            <button class="tab-button" onclick="switchTab('extensions')">🧩 Extensions</button>
+        </div>
+        <button id="connectBleButton">Connect to ChameleonUltra BLE</button>
+    </div>
+
+    <div class="main-layout">
+        <!-- Left Panel: File Explorer / Editor -->
+        <div class="left-panel">
+            <div id="files-tab" class="tab-content active">
+                <div class="section">
+                    <h3>📂 File Explorer</h3>
+                    <div class="file-explorer-toolbar">
+                        <button onclick="uploadToFS()">📤 Upload File</button>
+                        <button onclick="createNewFile()">📄 New File</button>
+                        <button onclick="createNewFolder()">📁 New Folder</button>
+                        <button onclick="refreshFileTree()">🔄 Refresh</button>
+                        <input type="file" id="fsFileInput" style="display: none;" multiple>
+                    </div>
+                    <div id="fileTree" class="file-tree"></div>
+                </div>
+            </div>
+
+            <div id="editor-tab" class="tab-content">
+                <div class="section">
+                    <h3>✏️ Script Editor</h3>
+                    <div class="editor-toolbar">
+                        <input type="text" id="scriptName" placeholder="script-name.js" value="my-script.js">
+                        <button onclick="runEditorScript()">▶ Run</button>
+                        <button onclick="saveEditorScript()">💾 Save</button>
+                        <button onclick="formatCode()">✨ Format</button>
+                        <div class="share-menu">
+                            <button>📤 Share</button>
+                            <div class="share-dropdown">
+                                <button onclick="shareViaURL()">🔗 Copy Link</button>
+                                <button onclick="shareViaQR()">📱 QR Code</button>
+                                <button onclick="downloadScript()">💾 Download</button>
+                                <button onclick="shareToGist()">🐙 GitHub Gist</button>
+                            </div>
+                        </div>
+                        <button onclick="newScript()">📄 New</button>
+                        <button onclick="clearEditor()">🗑️ Clear</button>
+                    </div>
+                    <div class="editor-container">
+                        <textarea id="codeEditor"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div id="extensions-tab" class="tab-content">
+                <div class="section">
+                    <h3>🧩 Extension Manager</h3>
+                    <div class="extensions-toolbar">
+                        <button onclick="refreshExtensions()">🔄 Refresh</button>
+                        <button onclick="reloadAllExtensions()">♻️ Reload All</button>
+                    </div>
+                    <div id="extensionsList" class="extensions-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Console -->
+        <div class="right-panel">
+            <div class="console-wrapper">
+                <div id="console-container"></div>
+                <div class="console-input-wrapper">
+                    <input id="input" placeholder="Type JS commands or device commands here..." />
+                    <button onclick="clearConsole()">🗑️ Clear</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- QR Code Modal -->
+    <div id="qrModal">
+        <div class="modal-content">
+            <span class="close-modal" onclick="closeQRModal()">&times;</span>
+            <h3>📱 Scan to Load Script</h3>
+            <div id="qrcode"></div>
+            <p style="font-size: 12px; color: #888;">Scan with your phone to open this script</p>
+        </div>
+    </div>
+
+    <!-- Generic Modal -->
+    <div id="genericModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3 id="modalTitle">Modal Title</h3>
+                <span class="modal-close" onclick="closeGenericModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Content will be inserted here -->
+            </div>
+            <div class="modal-footer" id="modalFooter">
+                <!-- Buttons will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- CodeMirror JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+
+    <!-- CodeMirror Addons -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/javascript-hint.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/anyword-hint.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/comment/comment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/brace-fold.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/comment-fold.min.js"></script>
+
+    <!-- Prettier for code formatting -->
+    <script src="https://unpkg.com/prettier@2.8.8/standalone.js"></script>
+    <script src="https://unpkg.com/prettier@2.8.8/parser-babel.js"></script>
+
+    <!-- QR Code generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+    <!-- FileSystem Manager -->
+    <script src="js/filesystem.js"></script>
+
+    <!-- Application JavaScript -->
+    <script src="js/app.js"></script>
+</body>
+</html>
