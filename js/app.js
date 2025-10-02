@@ -1631,7 +1631,16 @@
 
             if (sharedScript) {
                 try {
-                    const decoded = atob(sharedScript);
+                    // Decode base64 (URLSearchParams already handles URL decoding)
+                    const binaryString = atob(sharedScript);
+
+                    // Convert binary string to UTF-8 using TextDecoder
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    const decoder = new TextDecoder();
+                    const decoded = decoder.decode(bytes);
                     const scriptData = JSON.parse(decoded);
 
                     // Load into editor
@@ -1695,8 +1704,18 @@
             }
 
             const scriptData = { name, code };
-            const encoded = btoa(JSON.stringify(scriptData));
-            const shareURL = `${window.location.origin}${window.location.pathname}?script=${encoded}`;
+            // Use TextEncoder for proper Unicode handling
+            const encoder = new TextEncoder();
+            const data = encoder.encode(JSON.stringify(scriptData));
+            // Convert bytes to binary string (only use lower byte of each value)
+            let binaryString = '';
+            for (let i = 0; i < data.length; i++) {
+                binaryString += String.fromCharCode(data[i]);
+            }
+            const encoded = btoa(binaryString);
+            // URL-encode the base64 string to handle +, /, = characters
+            const urlSafe = encodeURIComponent(encoded);
+            const shareURL = `${window.location.origin}${window.location.pathname}?script=${urlSafe}`;
 
             // Copy to clipboard
             navigator.clipboard.writeText(shareURL).then(() => {
@@ -1720,25 +1739,46 @@
             }
 
             const scriptData = { name, code };
-            const encoded = btoa(JSON.stringify(scriptData));
-            const shareURL = `${window.location.origin}${window.location.pathname}?script=${encoded}`;
+            // Use TextEncoder for proper Unicode handling
+            const encoder = new TextEncoder();
+            const data = encoder.encode(JSON.stringify(scriptData));
+            // Convert bytes to binary string (only use lower byte of each value)
+            let binaryString = '';
+            for (let i = 0; i < data.length; i++) {
+                binaryString += String.fromCharCode(data[i]);
+            }
+            const encoded = btoa(binaryString);
+            // URL-encode the base64 string to handle +, /, = characters
+            const urlSafe = encodeURIComponent(encoded);
+            const shareURL = `${window.location.origin}${window.location.pathname}?script=${urlSafe}`;
+
+            // QR codes have a maximum capacity (~2953 bytes for version 40-L)
+            if (shareURL.length > 2000) {
+                logToConsole('❌ Script is too large for QR code. Use "Copy Link" instead.', true);
+                return;
+            }
 
             // Clear previous QR code
             const qrDiv = document.getElementById('qrcode');
             qrDiv.innerHTML = '';
 
-            // Generate QR code
-            new QRCode(qrDiv, {
-                text: shareURL,
-                width: 256,
-                height: 256,
-                colorDark: '#000000',
-                colorLight: '#ffffff',
-            });
+            try {
+                // Generate QR code
+                new QRCode(qrDiv, {
+                    text: shareURL,
+                    width: 256,
+                    height: 256,
+                    colorDark: '#000000',
+                    colorLight: '#ffffff',
+                });
 
-            // Show modal
-            document.getElementById('qrModal').style.display = 'block';
-            logToConsole('📱 QR code generated');
+                // Show modal
+                document.getElementById('qrModal').style.display = 'block';
+                logToConsole('📱 QR code generated');
+            } catch (error) {
+                logToConsole('❌ Failed to generate QR code. Script may be too large.', true);
+                console.error('QR code error:', error);
+            }
         }
 
         function closeQRModal() {
