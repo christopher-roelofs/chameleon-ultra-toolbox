@@ -1,2 +1,2 @@
-# chameleon-ultra-toolbox
-Web Terminal for Chameleon Ultra
+# Web Toolbox
+Web Terminal with ability for custom scripts and extensions
