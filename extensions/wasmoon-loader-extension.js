@@ -1,14 +1,10 @@
 /**
  * Wasmoon (Lua) Loader Extension
- *
- * Automatically loads Wasmoon (Lua 5.4 in WebAssembly) at startup.
- * Much faster and smaller than Pyodide (~100KB vs ~10MB).
- *
- * Provides:
- * - window.lua - Lua engine instance
- * - window.luaReady - Boolean flag
- * - Automatic Lua print() redirect to app console
- * - chameleon_cmd() function available in Lua
+ * @name Lua (Wasmoon)
+ * @version 1.0.0
+ * @author Toolbox Team
+ * @description Lua 5.4 runtime via WebAssembly with device bridge and auto-loading for .lua scripts
+ * @source https://github.com/ceifa/wasmoon
  */
 
 const extensionName = 'Wasmoon Loader';
@@ -82,83 +78,76 @@ function print(...)
 end
 `);
 
-        // Expose async sleep function to Lua
-        window.lua.global.set('js_sleep', (ms) => {
-            return new Promise(resolve => setTimeout(resolve, ms));
+        // Expose ToolboxAPI to Lua so scripts can access device constants
+        window.lua.global.set('ToolboxAPI', window.ToolboxAPI);
+
+        // Also create a 'js' object with 'global' property for compatibility
+        window.lua.global.set('js', {
+            global: window
         });
 
-        // Expose Chameleon Ultra BLE command function to Lua
-        window.lua.global.set('chameleon_cmd', async (cmdNum, silent) => {
-            const chameleon = window.ChameleonAPI?.chameleonUltra || window.chameleonUltra;
+        // Expose generic device command function to Lua (device-agnostic)
+        // Returns a promise that Lua can await
+        window.lua.global.set('device_cmd_async', (cmd, data) => {
+            const device = window.ToolboxAPI?.chameleonUltra || window.chameleonUltra;
 
-            if (!chameleon) {
-                throw new Error('Not connected to Chameleon Ultra. Please connect via BLE first.');
+            if (!device) {
+                throw new Error('Not connected to any device. Please connect first.');
             }
 
-            const silentMode = silent !== undefined ? silent : true;
-            const result = await chameleon.cmd(cmdNum, null, silentMode);
-
-            if (result && result.data) {
-                // Convert Uint8Array to Lua table
-                const dataArray = Array.from(result.data);
-                return {
-                    cmd: result.cmd,
-                    status: result.status,
-                    data: dataArray
-                };
-            }
-            return null;
+            // Return a promise that will be awaited by Lua
+            return device.cmd(cmd, data).then(result => {
+                // Handle both binary response objects and text responses
+                if (result && typeof result === 'object') {
+                    if (result.data !== undefined) {
+                        // Binary response (Chameleon Ultra style)
+                        const dataArray = Array.from(result.data);
+                        return {
+                            cmd: result.cmd,
+                            status: result.status,
+                            data: dataArray
+                        };
+                    } else {
+                        // Other object response
+                        return result;
+                    }
+                }
+                // String response (Bruce style) or null
+                return result;
+            });
         });
 
-        // Add helper utilities to Lua
+        // Add generic helper utilities to Lua
         await window.lua.doString(`
--- Helper constants
-CMD_GET_BATTERY_INFO = 1025
-CMD_GET_ACTIVE_SLOT = 1018
-CMD_GET_SLOT_INFO = 1021
-
 -- Helper to check if connected
 function is_connected()
     -- This will be set from JavaScript side
     return js_connected == true
 end
 
--- Quick battery check
-function get_battery()
-    local result = chameleon_cmd(CMD_GET_BATTERY_INFO, true)
-    if result and result.data then
-        local voltage = result.data[1] + (result.data[2] * 256)
-        local percentage = result.data[3] or 0
-        return {voltage = voltage, percentage = percentage}
-    end
-    return nil
-end
-
--- Quick slot check
-function get_active_slot()
-    local result = chameleon_cmd(CMD_GET_ACTIVE_SLOT, true)
-    if result and result.data then
-        return result.data[1]
-    end
-    return nil
+-- Synchronous wrapper for async device command (uses await)
+function device_cmd(cmd, data)
+    return device_cmd_async(cmd, data):await()
 end
 
 -- Helper to sleep (wrapper that awaits the promise)
 function sleep(seconds)
-    js_sleep(seconds * 1000)
+    js_sleep_async(seconds * 1000):await()
 end
 
-print("✓ Chameleon Ultra Lua helpers loaded")
-print("  - chameleon_cmd(cmd_num, silent)")
-print("  - get_battery()")
-print("  - get_active_slot()")
-print("  - is_connected()")
-print("  - sleep(seconds)")
+print("✓ Lua device bridge loaded")
+print("  - device_cmd(cmd, data) - Send command to connected device")
+print("  - is_connected() - Check if device is connected")
+print("  - sleep(seconds) - Sleep for N seconds")
+print("")
+print("Access device constants from JS:")
+print("  Use js.global.ToolboxAPI.ChameleonUltra.CMD_GET_BATTERY_INFO")
+print("  Use js.global.ToolboxAPI.Bruce.WIFI_SCAN")
 `);
 
         // Set connection status
         const updateConnectionStatus = () => {
-            const connected = !!(window.ChameleonAPI?.chameleonUltra || window.chameleonUltra);
+            const connected = !!(window.ToolboxAPI?.chameleonUltra || window.chameleonUltra);
             window.lua.global.set('js_connected', connected);
         };
         updateConnectionStatus();
@@ -186,55 +175,19 @@ print("  - sleep(seconds)")
     }
 }
 
-// Register command to manually load Lua
-API.registerCommand('lua-init', 'Initialize Lua environment', async () => {
-    await initLuaEnvironment();
-});
-
-// Register command to check Lua status
-API.registerCommand('lua-status', 'Show Lua status', async () => {
-    logToConsole('🌙 Lua Status:');
-    logToConsole(`  Ready: ${window.luaReady ? '✅' : '❌'}`);
-    logToConsole(`  Loading: ${window.luaLoading ? '⏳ Yes' : 'No'}`);
-
-    if (window.luaReady) {
-        const version = await window.lua.doString('return _VERSION');
-        logToConsole(`  Version: ${version}`);
-    }
-});
-
-// Register command to run Lua one-liner
-API.registerCommand('lua', 'Execute Lua code (e.g., lua print(2+2))', async (args) => {
-    if (!window.luaReady) {
-        logToConsole('⚠️ Lua not ready. Run "lua-init" first or wait for auto-load.', true);
-        return;
-    }
-
-    if (args.length === 0) {
-        logToConsole('Usage: lua <lua code>');
-        logToConsole('Example: lua print(2 + 2)');
-        return;
-    }
-
-    const code = args.join(' ');
-
-    try {
-        await window.lua.doString(code);
-    } catch (error) {
-        logToConsole(`❌ Lua Error: ${error.message}`, true);
-    }
-});
+// Register Lua as an extension
+API.registerDevice('lua', 'Lua');
 
 // Register Lua file runner
-API.registerCommand('lua-run', 'Run Lua file from VFS (e.g., lua-run /scripts/test.lua)', async (args) => {
+API.registerDeviceCommand('lua', 'lua-run', 'Run Lua file from VFS', async (args) => {
     if (!window.luaReady) {
-        logToConsole('⚠️ Lua not ready. Run "lua-init" first or wait for auto-load.', true);
+        logToConsole('⚠️ Lua not ready. Wait for initialization...', true);
         return;
     }
 
     if (args.length === 0) {
-        logToConsole('Usage: lua-run <filepath>');
-        logToConsole('Example: lua-run /scripts/battery.lua');
+        logToConsole('Usage: lua lua-run <filepath>');
+        logToConsole('Example: lua lua-run /scripts/battery.lua');
         return;
     }
 
@@ -297,7 +250,7 @@ if (window.runFileFromFS) {
 }
 
 logToConsole(`✓ Extension loaded: ${extensionName}`);
-logToConsole('  Commands: lua, lua-init, lua-status, lua-run');
+logToConsole('  Commands: lua-run');
 logToConsole('  .lua files auto-detected in Script Editor');
 logToConsole('  Starting Lua background load...');
 

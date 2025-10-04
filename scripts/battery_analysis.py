@@ -1,20 +1,41 @@
-# Pure Python Battery Analysis Script
-# No JavaScript wrapper needed! Just upload as .py file and run.
+"""
+Battery Analysis Script (Python)
+@name Battery Analysis (Python)
+@version 1.0.0
+@author Toolbox Team
+@description Advanced battery analysis with NumPy statistics, trend analysis, and health scoring
+@source https://github.com/GameTec-live/ChameleonUltra
+"""
 
 import asyncio
 import numpy as np
+from js import ToolboxAPI
+
+# Import constants from Chameleon Ultra device extension
+# (Device extension exports these, not hardcoded here!)
+CMD_GET_BATTERY_INFO = ToolboxAPI.ChameleonUltra.CMD_GET_BATTERY_INFO
+
+async def get_battery():
+    """Get battery info using device extension"""
+    result = await device_cmd(CMD_GET_BATTERY_INFO, None)
+    if result and result['data']:
+        data = result['data']
+        voltage = (data[1] << 8) | data[0]
+        percentage = data[2] if len(data) > 2 else 0
+        return {'voltage': voltage, 'percentage': percentage}
+    return None
 
 async def analyze_battery():
     """
     Comprehensive battery analysis
     """
     print("=" * 60)
-    print("🔋 CHAMELEON ULTRA BATTERY ANALYSIS")
+    print("🔋 BATTERY ANALYSIS")
     print("=" * 60)
 
     # Check connection
     if not is_connected():
-        print("❌ Not connected to Chameleon Ultra")
+        print("❌ Not connected to device")
         return
 
     # Collect 15 battery samples

@@ -1,14 +1,35 @@
--- Pure Lua Battery Analysis Script
--- No JavaScript wrapper needed! Just upload as .lua file and run.
+--[[
+Battery Analysis Script (Lua)
+@name Battery Analysis (Lua)
+@version 1.0.0
+@author Toolbox Team
+@description Battery analysis with statistics, trend analysis, and health scoring in pure Lua
+@source https://github.com/GameTec-live/ChameleonUltra
+--]]
+
+-- Import constants from Chameleon Ultra device extension
+-- (Device extension exports these, not hardcoded here!)
+local CMD_GET_BATTERY_INFO = js.global.ToolboxAPI.ChameleonUltra.CMD_GET_BATTERY_INFO
+
+-- Helper function to get battery info using device extension
+local function get_battery()
+    local result = device_cmd(CMD_GET_BATTERY_INFO, nil)
+    if result and result.data then
+        local voltage = result.data[1] + (result.data[2] * 256)
+        local percentage = result.data[3] or 0
+        return {voltage = voltage, percentage = percentage}
+    end
+    return nil
+end
 
 -- Battery Analysis Script in Lua
 print("============================================================")
-print("🔋 CHAMELEON ULTRA BATTERY ANALYSIS (LUA)")
+print("🔋 BATTERY ANALYSIS (LUA)")
 print("============================================================")
 
 -- Check connection
 if not is_connected() then
-    print("❌ Not connected to Chameleon Ultra")
+    print("❌ Not connected to device")
     return
 end
 
@@ -18,7 +39,7 @@ end
 -- For now, let's do a simple demo with a few samples
 print("")
 print("📊 Collecting battery samples...")
-print("  (Using Lua helper functions)")
+print("  (Using device bridge functions)")
 
 local samples = {}
 local sample_count = 5

@@ -1,9 +1,15 @@
-// Example script: Get battery status and display percentage
-// This script can be uploaded and executed from the Script Manager
+/**
+ * Battery Status Check
+ * @name Battery Status Checker
+ * @version 1.0.0
+ * @author Toolbox Team
+ * @description Checks Chameleon Ultra battery voltage and percentage
+ * @source https://github.com/GameTec-live/ChameleonUltra
+ */
 
 (async function() {
     // Check if device is connected
-    if (!chameleonUltra || !chameleonUltra.device || !chameleonUltra.device.gatt.connected) {
+    if (!chameleonUltra || !chameleonUltra.isConnected()) {
         logToConsole('❌ Device not connected! Please connect first.', true);
         return;
     }
@@ -12,6 +18,7 @@
 
     try {
         // Send GET_BATTERY_INFO command (1025)
+        const { CMD_GET_BATTERY_INFO } = ToolboxAPI.ChameleonUltra;
         const response = await chameleonUltra.cmd(CMD_GET_BATTERY_INFO);
 
         // Check if command was successful

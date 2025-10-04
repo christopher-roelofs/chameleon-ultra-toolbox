@@ -1,14 +1,10 @@
 /**
  * Pyodide Loader Extension
- *
- * Automatically loads Pyodide at startup and sets up the Python environment.
- * This makes Python scripts run faster by avoiding repeated setup.
- *
- * Provides:
- * - window.pyodide - Pyodide instance
- * - window.pyodideReady - Boolean flag
- * - Automatic Python stdout/stderr redirect to app console
- * - chameleon_cmd() function available in Python
+ * @name Python (Pyodide)
+ * @version 1.0.0
+ * @author Toolbox Team
+ * @description Python 3.11 runtime with NumPy, device bridge, and auto-loading for .py scripts
+ * @source https://pyodide.org
  */
 
 const extensionName = 'Pyodide Loader';
@@ -109,63 +105,67 @@ sys.stdout = _app_logger
 sys.stderr = _app_logger
 `);
 
-        // Expose Chameleon Ultra BLE command function to Python
-        window.pyodide.globals.set('chameleon_cmd', async (cmdNum, silent = true) => {
-            const chameleon = window.ChameleonAPI?.chameleonUltra || window.chameleonUltra;
+        // Expose generic device command function to Python (device-agnostic)
+        window.pyodide.globals.set('device_cmd', async (cmd, data = null) => {
+            const device = window.ToolboxAPI?.chameleonUltra || window.chameleonUltra;
 
-            if (!chameleon) {
-                throw new Error('Not connected to Chameleon Ultra. Please connect via BLE first.');
+            if (!device) {
+                throw new Error('Not connected to any device. Please connect via BLE or Serial first.');
             }
 
-            const result = await chameleon.cmd(cmdNum, null, silent);
-            if (result && result.data) {
-                // Convert to Python dict
-                return window.pyodide.toPy({
-                    cmd: result.cmd,
-                    status: result.status,
-                    data: Array.from(result.data)
-                });
+            const result = await device.cmd(cmd, data);
+
+            // Convert result to Python-friendly format
+            if (result && typeof result === 'object') {
+                // Handle both binary response objects and text responses
+                if (result.data !== undefined) {
+                    // Binary response (Chameleon Ultra style)
+                    return window.pyodide.toPy({
+                        cmd: result.cmd,
+                        status: result.status,
+                        data: Array.from(result.data)
+                    });
+                } else {
+                    // Text response (Bruce style) or other format
+                    return window.pyodide.toPy(result);
+                }
             }
-            return null;
+
+            // String response (Bruce serial output)
+            return result;
         });
 
-        // Add helper utilities to Python
+        // Add generic helper utilities to Python
         await window.pyodide.runPythonAsync(`
-# Helper constants
-CMD_GET_BATTERY_INFO = 1025
-CMD_GET_ACTIVE_SLOT = 1018
-CMD_GET_SLOT_INFO = 1021
-
-# Helper to check if connected
+# Device-agnostic helper to check if connected
 def is_connected():
-    """Check if Chameleon Ultra is connected"""
-    from js import ChameleonAPI
-    return ChameleonAPI.chameleonUltra is not None
+    """Check if any device is connected"""
+    from js import ToolboxAPI
+    return ToolboxAPI.chameleonUltra is not None
 
-# Quick battery check
-async def get_battery():
-    """Get battery voltage and percentage"""
-    result = await chameleon_cmd(CMD_GET_BATTERY_INFO, True)
-    if result and result['data']:
-        data = result['data']
-        voltage = (data[1] << 8) | data[0]
-        percentage = data[2] if len(data) > 2 else 0
-        return {'voltage': voltage, 'percentage': percentage}
-    return None
+# Access to ToolboxAPI constants (set by device extensions)
+def get_device_constants():
+    """Get constants exported by the current device extension"""
+    from js import ToolboxAPI
+    constants = {}
 
-# Quick slot check
-async def get_active_slot():
-    """Get active slot number"""
-    result = await chameleon_cmd(CMD_GET_ACTIVE_SLOT, True)
-    if result and result['data']:
-        return result['data'][0]
-    return None
+    # Get all device-specific constant namespaces
+    if hasattr(ToolboxAPI, 'ChameleonUltra'):
+        constants['ChameleonUltra'] = ToolboxAPI.ChameleonUltra.to_py()
+    if hasattr(ToolboxAPI, 'Bruce'):
+        constants['Bruce'] = ToolboxAPI.Bruce.to_py()
 
-print("✓ Chameleon Ultra Python helpers loaded")
-print("  - chameleon_cmd(cmd_num, silent=True)")
-print("  - get_battery()")
-print("  - get_active_slot()")
-print("  - is_connected()")
+    return constants
+
+print("✓ Python device bridge loaded")
+print("  - device_cmd(cmd, data=None) - Send command to connected device")
+print("  - is_connected() - Check if device is connected")
+print("  - get_device_constants() - Get device-specific constants")
+print("")
+print("Access device constants from ToolboxAPI:")
+print("  from js import ToolboxAPI")
+print("  ToolboxAPI.ChameleonUltra.CMD_GET_BATTERY_INFO")
+print("  ToolboxAPI.Bruce.WIFI_SCAN")
 `);
 
         window.pyodideReady = true;
@@ -181,63 +181,19 @@ print("  - is_connected()")
     }
 }
 
-// Register command to manually load Pyodide
-API.registerCommand('py-init', 'Initialize Pyodide environment', async () => {
-    await initPyodideEnvironment();
-});
-
-// Register command to check Pyodide status
-API.registerCommand('py-status', 'Show Pyodide status', async () => {
-    logToConsole('🐍 Pyodide Status:');
-    logToConsole(`  Ready: ${window.pyodideReady ? '✅' : '❌'}`);
-    logToConsole(`  Loading: ${window.pyodideLoading ? '⏳ Yes' : 'No'}`);
-
-    if (window.pyodideReady) {
-        const version = await window.pyodide.runPythonAsync('import sys; sys.version.split()[0]');
-        logToConsole(`  Python Version: ${version}`);
-
-        const packages = await window.pyodide.runPythonAsync(`
-import sys
-', '.join([pkg for pkg in ['numpy', 'asyncio'] if pkg in sys.modules])
-`);
-        if (packages) {
-            logToConsole(`  Packages: ${packages}`);
-        }
-    }
-});
-
-// Register command to run Python one-liner
-API.registerCommand('py', 'Execute Python code (e.g., py print(2+2))', async (args) => {
-    if (!window.pyodideReady) {
-        logToConsole('⚠️ Pyodide not ready. Run "py-init" first or wait for auto-load.', true);
-        return;
-    }
-
-    if (args.length === 0) {
-        logToConsole('Usage: py <python code>');
-        logToConsole('Example: py print(2 + 2)');
-        return;
-    }
-
-    const code = args.join(' ');
-
-    try {
-        await window.pyodide.runPythonAsync(code);
-    } catch (error) {
-        logToConsole(`❌ Python Error: ${error.message}`, true);
-    }
-});
+// Register Python as an extension
+API.registerDevice('python', 'Python');
 
 // Register Python file runner
-API.registerCommand('py-run', 'Run Python file from VFS (e.g., py-run /scripts/test.py)', async (args) => {
+API.registerDeviceCommand('python', 'py-run', 'Run Python file from VFS', async (args) => {
     if (!window.pyodideReady) {
-        logToConsole('⚠️ Pyodide not ready. Run "py-init" first or wait for auto-load.', true);
+        logToConsole('⚠️ Pyodide not ready. Wait for initialization...', true);
         return;
     }
 
     if (args.length === 0) {
-        logToConsole('Usage: py-run <filepath>');
-        logToConsole('Example: py-run /scripts/battery.py');
+        logToConsole('Usage: python py-run <filepath>');
+        logToConsole('Example: python py-run /scripts/battery.py');
         return;
     }
 
@@ -300,7 +256,7 @@ if (window.runFileFromFS) {
 }
 
 logToConsole(`✓ Extension loaded: ${extensionName}`);
-logToConsole('  Commands: py, py-init, py-status, py-run');
+logToConsole('  Commands: py-run');
 logToConsole('  .py files auto-detected in Script Editor');
 logToConsole('  Starting Pyodide background load...');
 

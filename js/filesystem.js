@@ -93,7 +93,13 @@ class FileSystemManager {
             const store = transaction.objectStore('files');
             const request = store.put(fileEntry);
 
-            request.onsuccess = () => resolve(path);
+            request.onsuccess = () => {
+                resolve(path);
+                // Auto-refresh file tree
+                if (window.refreshFileTree) {
+                    window.refreshFileTree().catch(() => {});
+                }
+            };
             request.onerror = () => reject(request.error);
         });
     }
@@ -121,13 +127,13 @@ class FileSystemManager {
 
                 const content = request.result.content;
 
-                if (encoding === 'binary') {
-                    // Convert back to Uint8Array if it was stored as array
-                    if (Array.isArray(content)) {
-                        resolve(new Uint8Array(content));
-                    } else {
-                        resolve(content);
-                    }
+                // Auto-detect binary content (stored as array) and convert to Uint8Array
+                if (Array.isArray(content)) {
+                    resolve(new Uint8Array(content));
+                } else if (encoding === 'binary' && !(content instanceof Uint8Array)) {
+                    // Explicitly requested binary but got string - convert
+                    const encoder = new TextEncoder();
+                    resolve(encoder.encode(content));
                 } else {
                     resolve(content);
                 }
@@ -149,7 +155,13 @@ class FileSystemManager {
             const store = transaction.objectStore('files');
             const request = store.delete(path);
 
-            request.onsuccess = () => resolve();
+            request.onsuccess = () => {
+                resolve();
+                // Auto-refresh file tree
+                if (window.refreshFileTree) {
+                    window.refreshFileTree().catch(() => {});
+                }
+            };
             request.onerror = () => reject(request.error);
         });
     }
@@ -190,6 +202,11 @@ class FileSystemManager {
                 request.onsuccess = () => resolve();
                 request.onerror = () => reject(request.error);
             });
+        }
+
+        // Auto-refresh file tree
+        if (window.refreshFileTree) {
+            window.refreshFileTree().catch(() => {});
         }
 
         return path;
@@ -442,6 +459,11 @@ class FileSystemManager {
         for (const part of parts) {
             currentPath += '/' + part;
             await this._ensureDirectory(currentPath);
+        }
+
+        // Auto-refresh file tree
+        if (window.refreshFileTree) {
+            window.refreshFileTree().catch(() => {});
         }
 
         return path;

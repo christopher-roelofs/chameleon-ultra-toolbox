@@ -1,6 +1,7 @@
         const outputDiv = document.getElementById("console-container");
         const inputElement = document.getElementById("input");
         const connectBleButton = document.getElementById("connectBleButton");
+        const connectSerialButton = document.getElementById("connectSerialButton");
 
         // Command registry - MUST be defined early for extensions
         const commands = {};
@@ -14,6 +15,10 @@
         window.NTAG215Database = null;
         window.NTAG215Reader = null;
 
+        // Initialize Device Registry
+        const deviceRegistry = new DeviceRegistry();
+        window.deviceRegistry = deviceRegistry;
+
         // Initialize FileSystemManager
         let fs = null;
         let currentSelectedFile = null;
@@ -22,14 +27,18 @@
             try {
                 fs = new FileSystemManager();
                 await fs.init();
-                window.fs = fs; // Make it globally accessible
+                window.ToolboxAPI.fs = fs; // Make it globally accessible via ToolboxAPI
                 logToConsole('✓ Virtual filesystem initialized');
 
                 // Create default directories
-                await fs.mkdir('/helpers');
-                await fs.mkdir('/scripts');
-                await fs.mkdir('/data');
-                await fs.mkdir('/extensions');
+                try {
+                    await fs.mkdir('/scripts');
+                    await fs.mkdir('/data');
+                    await fs.mkdir('/extensions');
+                    logToConsole('✓ Created default directories: /scripts, /data, /extensions');
+                } catch (mkdirError) {
+                    logToConsole(`Error creating directories: ${mkdirError.message}`, true);
+                }
 
                 // Load and display file tree
                 await refreshFileTree();
@@ -264,38 +273,10 @@
             }
         }
 
-        const NRF_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-        const UART_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Characteristic for receiving data from device
-        const UART_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Characteristic for sending data to device
+        // Chameleon Ultra constants and classes moved to extension
+        // See: extensions/chameleon-ultra-device.js
 
-        // Command constants from ChameleonUltra firmware
-        const CMD_SET_ACTIVE_SLOT = 1003;
-        const CMD_GET_ACTIVE_SLOT = 1018;
-        const CMD_GET_SLOT_INFO = 1019;
-        const CMD_GET_ALL_SLOT_NICKS = 1038;
-        const CMD_GET_ENABLED_SLOTS = 1023;
-        const CMD_SET_SLOT_TAG_TYPE = 1004;
-        const CMD_SET_SLOT_DATA_DEFAULT = 1005;
-        const CMD_SET_SLOT_ENABLE = 1006;
-        const CMD_DELETE_SLOT_INFO = 1024;
-        const CMD_GET_BATTERY_INFO = 1025;
-        const CMD_MF1_SET_ANTICOLLISION = 4001;
-        const CMD_MF0_NTAG_WRITE_EMU_PAGE_DATA = 4022;
-        const CMD_MF0_NTAG_READ_EMU_PAGE_DATA = 4021;
-        const CMD_MF0_NTAG_GET_VERSION_DATA = 4023;
-        const CMD_MF0_NTAG_SET_VERSION_DATA = 4024;
-        const CMD_MF0_NTAG_GET_SIGNATURE_DATA = 4025;
-        const CMD_MF0_NTAG_SET_SIGNATURE_DATA = 4026;
-        const CMD_MF0_NTAG_SET_WRITE_MODE = 4032;
-        const CMD_MF0_NTAG_SET_UID_MAGIC_MODE = 4020;
-        const CMD_SLOT_DATA_CONFIG_SAVE = 1009;
-        const CMD_SET_SLOT_TAG_NICK = 1007;
-        const CMD_GET_SLOT_TAG_NICK = 1008;
-
-        const TagType = { NTAG_215: 1101 };
-        const TagFrequency = { HF: 2 }; // HF frequency value
-
-        // Tag type mapping
+        // Tag type mapping (used by UI and scripts)
         const TAG_TYPE_NAMES = {
             0: 'Undefined',
             // LF Tags
@@ -325,265 +306,194 @@
             return TAG_TYPE_NAMES[typeCode] || `Unknown (${typeCode})`;
         }
 
-        // Function to handle device disconnection
-        function onDisconnected(event) {
-            logToConsole(`Device ${event.target.name} disconnected.`, true);
-            // Re-enable connect button or update UI as needed
-
-            // Trigger extension hooks
-            if (window.ChameleonAPI) {
-                window.ChameleonAPI.chameleonUltra = null;
-                window.ChameleonAPI._trigger('onDeviceDisconnected');
-            }
-        }
-
-        class ChameleonUltraBLE {
-            constructor() {
-                this.device = null;
-                this.txCharacteristic = null; // Device sends notifications on this
-                this.rxCharacteristic = null; // We write commands to this
-                this.responseCallbacks = {};
-                this.silentCommands = {}; // Track which commands should not be logged
-                this.responseBuffer = new Uint8Array();
-                this.SOF = 0x11;
-                this.MAX_DATA_LENGTH = 4096;
-            }
-
-            // Calculate LRC checksum
-            lrcCalc(array) {
-                let ret = 0x00;
-                for (let b of array) {
-                    ret += b;
-                    ret &= 0xFF;
-                }
-                return (0x100 - ret) & 0xFF;
-            }
-
-            // Make binary data frame: SOF(1)|LRC1(1)|CMD(2)|STATUS(2)|LENGTH(2)|LRC2(1)|DATA(n)|LRC3(1)
-            makeDataFrame(cmd, data = null, status = 0) {
-                if (data === null) data = new Uint8Array(0);
-                const dataLen = data.length;
-
-                // Create frame buffer
-                const frameLen = 1 + 1 + 2 + 2 + 2 + 1 + dataLen + 1;
-                const frame = new Uint8Array(frameLen);
-                let offset = 0;
-
-                // SOF
-                frame[offset++] = this.SOF;
-
-                // LRC1 (placeholder)
-                const lrc1Pos = offset++;
-
-                // CMD (big-endian uint16)
-                frame[offset++] = (cmd >> 8) & 0xFF;
-                frame[offset++] = cmd & 0xFF;
-
-                // STATUS (big-endian uint16)
-                frame[offset++] = (status >> 8) & 0xFF;
-                frame[offset++] = status & 0xFF;
-
-                // LENGTH (big-endian uint16)
-                frame[offset++] = (dataLen >> 8) & 0xFF;
-                frame[offset++] = dataLen & 0xFF;
-
-                // LRC2 (placeholder)
-                const lrc2Pos = offset++;
-
-                // DATA
-                if (dataLen > 0) {
-                    frame.set(data, offset);
-                    offset += dataLen;
-                }
-
-                // LRC3 (placeholder)
-                const lrc3Pos = offset;
-
-                // Calculate LRCs
-                frame[lrc1Pos] = this.lrcCalc(frame.slice(0, lrc1Pos));
-                frame[lrc2Pos] = this.lrcCalc(frame.slice(0, lrc2Pos));
-                frame[lrc3Pos] = this.lrcCalc(frame.slice(0, lrc3Pos));
-
-                return frame;
-            }
-
-            async connect() {
-                this.device = await navigator.bluetooth.requestDevice({
-                    filters: [{ services: [NRF_SERVICE_UUID] }],
-                    optionalServices: [NRF_SERVICE_UUID] // Include optional services if needed
-                });
-                this.device.addEventListener('gattserverdisconnected', this.onDisconnected.bind(this));
-                const server = await this.device.gatt.connect();
-                const service = await server.getPrimaryService(NRF_SERVICE_UUID);
-
-                this.txCharacteristic = await service.getCharacteristic(UART_TX_UUID); // Device sends notifications on this
-                this.rxCharacteristic = await service.getCharacteristic(UART_RX_UUID); // We write commands to this
-
-                // Set up notification listener on the TX characteristic (where device sends data)
-                this.txCharacteristic.addEventListener('characteristicvaluechanged', this.handleNotifications.bind(this));
-                await this.txCharacteristic.startNotifications();
-            }
-
-            onDisconnected(event) {
-                logToConsole(`Device ${event.target.name} disconnected.`, true);
-                // You might want to update UI elements here, e.g., re-enable connect button
-            }
-
-            handleNotifications(event) {
-                const value = new Uint8Array(event.target.value.buffer);
-
-                // Append new data to buffer
-                const newBuffer = new Uint8Array(this.responseBuffer.length + value.length);
-                newBuffer.set(this.responseBuffer);
-                newBuffer.set(value, this.responseBuffer.length);
-                this.responseBuffer = newBuffer;
-
-                // Try to parse complete frames
-                this.parseFrames();
-            }
-
-            parseFrames() {
-                while (this.responseBuffer.length > 0) {
-                    // Need at least header: SOF(1) + LRC1(1) + CMD(2) + STATUS(2) + LENGTH(2) + LRC2(1) = 9 bytes
-                    if (this.responseBuffer.length < 9) break;
-
-                    // Check SOF
-                    if (this.responseBuffer[0] !== this.SOF) {
-                        logToConsole("Invalid SOF, skipping byte", true);
-                        this.responseBuffer = this.responseBuffer.slice(1);
-                        continue;
-                    }
-
-                    // Verify LRC1
-                    if (this.responseBuffer[1] !== this.lrcCalc(this.responseBuffer.slice(0, 1))) {
-                        logToConsole("LRC1 mismatch", true);
-                        this.responseBuffer = this.responseBuffer.slice(1);
-                        continue;
-                    }
-
-                    // Parse header
-                    const cmd = (this.responseBuffer[2] << 8) | this.responseBuffer[3];
-                    const status = (this.responseBuffer[4] << 8) | this.responseBuffer[5];
-                    const dataLen = (this.responseBuffer[6] << 8) | this.responseBuffer[7];
-
-                    // Check if we have complete frame
-                    const frameLen = 9 + dataLen + 1;
-                    if (this.responseBuffer.length < frameLen) break;
-
-                    // Verify LRC2
-                    if (this.responseBuffer[8] !== this.lrcCalc(this.responseBuffer.slice(0, 8))) {
-                        logToConsole("LRC2 mismatch", true);
-                        this.responseBuffer = this.responseBuffer.slice(1);
-                        continue;
-                    }
-
-                    // Extract data
-                    const data = this.responseBuffer.slice(9, 9 + dataLen);
-
-                    // Verify LRC3
-                    if (this.responseBuffer[9 + dataLen] !== this.lrcCalc(this.responseBuffer.slice(0, 9 + dataLen))) {
-                        logToConsole("LRC3 mismatch", true);
-                        this.responseBuffer = this.responseBuffer.slice(1);
-                        continue;
-                    }
-
-                    // Valid frame received
-                    this.handleResponse(cmd, status, data);
-
-                    // Remove processed frame from buffer
-                    this.responseBuffer = this.responseBuffer.slice(frameLen);
-                }
-            }
-
-            handleResponse(cmd, status, data) {
-                const statusNames = {
-                    0x00: 'HF_TAG_OK',
-                    0x68: 'SUCCESS',
-                    0x60: 'PAR_ERR',
-                    0x67: 'INVALID_CMD'
-                };
-                const statusName = statusNames[status] || `0x${status.toString(16)}`;
-
-                // Check if this command should be logged
-                const callback = this.responseCallbacks[cmd];
-                if (callback) {
-                    // Check if this command was marked as silent
-                    const isSilent = this.silentCommands && this.silentCommands[cmd];
-
-                    const response = { cmd, status, data };
-                    callback(response);
-
-                    // Only log if not marked as silent
-                    if (!isSilent) {
-                        logToConsole(`← CMD=${cmd} Status=${statusName} Data(${data.length})=${Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-                    }
-
-                    delete this.responseCallbacks[cmd];
-                    if (this.silentCommands) delete this.silentCommands[cmd];
-                }
-            }
-
-            async sendCmd(cmd, data = null, status = 0, timeout = 3000, silent = false) {
-                return new Promise(async (resolve, reject) => {
-                    if (!this.device || !this.device.gatt.connected) {
-                        return reject(new Error('Device not connected'));
-                    }
-
-                    // Build frame
-                    const frame = this.makeDataFrame(cmd, data, status);
-
-                    if (!silent) {
-                        logToConsole(`→ CMD=${cmd} Data(${data ? data.length : 0})=${data ? Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ') : ''}`);
-                    }
-
-                    // Set up response callback
-                    const timeoutId = setTimeout(() => {
-                        delete this.responseCallbacks[cmd];
-                        delete this.silentCommands[cmd];
-                        reject(new Error('Command response timed out'));
-                    }, timeout);
-
-                    // Store silent flag for this command
-                    if (silent) {
-                        if (!this.silentCommands) this.silentCommands = {};
-                        this.silentCommands[cmd] = true;
-                    }
-
-                    this.responseCallbacks[cmd] = (response) => {
-                        clearTimeout(timeoutId);
-                        resolve(response);
-                    };
-
-                    // Send frame
-                    await this.rxCharacteristic.writeValue(frame);
-                });
-            }
-
-            // Helper method to send command by number
-            async cmd(cmdNum, data = null, silent = false) {
-                return await this.sendCmd(cmdNum, data, 0, 3000, silent);
-            }
-        }
+        // Legacy ChameleonUltraBLE and ChameleonUltraSerial classes removed
+        // Now loaded from extension: extensions/chameleon-ultra-device.js
 
         let chameleonUltra = null; // Instance of the new class
 
+        // Device selection modal
+        function showDeviceSelectionModal(devices, connectionType) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('genericModal');
+                const title = document.getElementById('modalTitle');
+                const body = document.getElementById('modalBody');
+                const footer = document.getElementById('modalFooter');
+
+                title.textContent = `Select Device Type (${connectionType})`;
+
+                body.innerHTML = `
+                    <p>Which device type is this?</p>
+                    <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
+                        ${devices.map(d => `
+                            <button class="device-option" data-id="${d.id}" style="padding: 15px; text-align: left; cursor: pointer; border: 1px solid #444; background: #2a2a2a; border-radius: 4px;">
+                                <strong>${d.name}</strong>
+                                <br><small style="color: #888;">${d.description || 'No description'}</small>
+                            </button>
+                        `).join('')}
+                    </div>
+                `;
+
+                footer.innerHTML = `
+                    <button onclick="closeGenericModal()" style="background: #666;">Cancel (use raw mode)</button>
+                `;
+
+                // Add click handlers
+                body.querySelectorAll('.device-option').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        resolve(btn.dataset.id);
+                        closeGenericModal();
+                    });
+                });
+
+                // Handle cancel
+                const originalClose = window.closeGenericModal;
+                window.closeGenericModal = () => {
+                    resolve(null);
+                    if (originalClose) originalClose();
+                    modal.style.display = 'none';
+                };
+
+                modal.style.display = 'flex';
+            });
+        }
+
         connectBleButton.addEventListener("click", async () => {
-            logToConsole("Attempting to connect to BLE device...");
+            logToConsole("Select a BLE device from the browser dialog...");
             try {
-                chameleonUltra = new ChameleonUltraBLE();
-                await chameleonUltra.connect();
+                // Connect to BLE device with no filters (user picks any device)
+                const transport = new BLETransport();
+                await transport.connect({
+                    serviceUUID: '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+                    txCharacteristicUUID: '6e400002-b5a3-f393-e0a9-e50e24dcca9e',
+                    rxCharacteristicUUID: '6e400003-b5a3-f393-e0a9-e50e24dcca9e',
+                    filters: []
+                });
 
-                logToConsole(`Connected to: ${chameleonUltra.device.name || 'Unknown Device'}`);
-                logToConsole("GATT server connected. Service and characteristics discovered. Notifications started on TX.");
+                logToConsole(`✓ BLE connected: ${transport.device?.name || 'Unknown'}`);
 
-                // Update API reference
-                window.ChameleonAPI.chameleonUltra = chameleonUltra;
+                // Get all BLE device extensions
+                const bleDevices = deviceRegistry.getAllDevices().filter(d => d.id.includes('ble'));
 
-                // Trigger extension hooks
-                window.ChameleonAPI._trigger('onDeviceConnected', chameleonUltra);
+                if (bleDevices.length === 0) {
+                    // No extensions - use raw mode
+                    window.rawBLE = transport;
+                    logToConsole(`No device extensions loaded. Access via: window.rawBLE`);
+                } else if (bleDevices.length === 1) {
+                    // Only one extension - use it automatically
+                    const deviceInfo = deviceRegistry.getDevice(bleDevices[0].id);
+                    const device = new deviceInfo.class();
+
+                    // Call device's connect() with existing transport
+                    await device.connect("ble", { transport: transport });
+                    device.name = bleDevices[0].name;
+
+                    chameleonUltra = device;
+                    window.ToolboxAPI.chameleonUltra = device;
+                    window.ToolboxAPI._trigger('onDeviceConnected', device);
+
+                    logToConsole(`✓ Using ${bleDevices[0].name}`);
+                } else {
+                    // Multiple extensions - show selection modal
+                    const deviceType = await showDeviceSelectionModal(bleDevices, 'BLE');
+
+                    if (deviceType) {
+                        const deviceInfo = deviceRegistry.getDevice(deviceType);
+                        const device = new deviceInfo.class();
+                        device.transport = transport;
+                        device.name = deviceInfo.metadata.name;
+
+                        // Set up device-specific response handler
+                        if (device.buffer !== undefined) {
+                            // Device uses frame parsing (Chameleon Ultra style)
+                            transport.onData((data) => {
+                                const newBuffer = new Uint8Array(device.buffer.length + data.length);
+                                newBuffer.set(device.buffer);
+                                newBuffer.set(data, device.buffer.length);
+                                device.buffer = newBuffer;
+                                if (device.parseFrames) {
+                                    device.parseFrames(device.buffer);
+                                }
+                            });
+                        }
+                        transport.onData((data) => {
+                            if (device.responseQueue) {
+                                device.responseQueue.push(data);
+                            }
+                        });
+
+                        chameleonUltra = device;
+                        window.ToolboxAPI.chameleonUltra = device;
+                        window.ToolboxAPI._trigger('onDeviceConnected', device);
+
+                        logToConsole(`✓ Using ${deviceInfo.metadata.name}`);
+                    } else {
+                        // User cancelled - use raw mode
+                        window.rawBLE = transport;
+                        logToConsole(`Raw BLE mode. Access via: window.rawBLE`);
+                    }
+                }
 
             } catch (error) {
-                logToConsole(`BLE Connection Error: ${error}`, true);
+                logToConsole(`BLE Connection Error: ${error.message}`, true);
+            }
+        });
+
+        connectSerialButton.addEventListener("click", async () => {
+            logToConsole("Select a Serial port from the browser dialog...");
+            try {
+                // Connect to Serial device
+                const transport = new SerialTransport();
+                await transport.connect({ baudRate: 115200 });
+
+                logToConsole(`✓ Serial connected at 115200 baud`);
+
+                // Get all Serial device extensions
+                const serialDevices = deviceRegistry.getAllDevices().filter(d => d.id.includes('serial'));
+
+                if (serialDevices.length === 0) {
+                    // No extensions - use raw mode
+                    window.rawSerial = transport;
+                    logToConsole(`No device extensions loaded. Access via: window.rawSerial`);
+                } else if (serialDevices.length === 1) {
+                    // Only one extension - use it automatically
+                    const deviceInfo = deviceRegistry.getDevice(serialDevices[0].id);
+                    const device = new deviceInfo.class();
+
+                    // Call device's connect() with existing transport
+                    await device.connect('serial', { transport: transport });
+                    device.name = serialDevices[0].name;
+
+                    chameleonUltra = device;
+                    window.ToolboxAPI.chameleonUltra = device;
+                    window.ToolboxAPI._trigger('onDeviceConnected', device);
+
+                    logToConsole(`✓ Using ${serialDevices[0].name}`);
+                } else {
+                    // Multiple extensions - show selection modal
+                    const deviceType = await showDeviceSelectionModal(serialDevices, 'Serial');
+
+                    if (deviceType) {
+                        const deviceInfo = deviceRegistry.getDevice(deviceType);
+                        const device = new deviceInfo.class();
+
+                        // Call device's connect() with existing transport
+                        await device.connect('serial', { transport: transport });
+                        device.name = deviceInfo.metadata.name;
+
+                        chameleonUltra = device;
+                        window.ToolboxAPI.chameleonUltra = device;
+                        window.ToolboxAPI._trigger('onDeviceConnected', device);
+
+                        logToConsole(`✓ Using ${deviceInfo.metadata.name}`);
+                    } else {
+                        // User cancelled - use raw mode
+                        window.rawSerial = transport;
+                        logToConsole(`Raw Serial mode. Access via: window.rawSerial`);
+                    }
+                }
+
+            } catch (error) {
+                logToConsole(`Serial Connection Error: ${error.message}`, true);
             }
         });
 
@@ -733,9 +643,8 @@
                 }
             } else if (disableAutoRestore) {
                 logToConsole('ℹ️  Auto-restore disabled');
-                // Initialize with empty string to ensure gutters render properly
                 codeEditor.setValue('');
-            } else if (hasURLScript) {
+            } else {
                 logToConsole('ℹ️  Loading script from URL...');
             }
         });
@@ -1204,7 +1113,34 @@
         async function editFileFromFS(path) {
             try {
                 const content = await fs.readFile(path);
-                codeEditor.setValue(content);
+
+                // Check if content is binary (Uint8Array) or text (string)
+                let textContent;
+                if (content instanceof Uint8Array) {
+                    // Binary file - check if it's a text-compatible binary or pure binary
+                    const filename = path.substring(path.lastIndexOf('/') + 1);
+                    if (filename.endsWith('.bin') || filename.endsWith('.dat')) {
+                        // Pure binary file - show hex dump instead
+                        textContent = '// Binary file - Hex dump:\n// File size: ' + content.length + ' bytes\n\n';
+                        for (let i = 0; i < Math.min(content.length, 1024); i += 16) {
+                            const chunk = content.slice(i, i + 16);
+                            const hex = Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                            const ascii = Array.from(chunk).map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join('');
+                            textContent += `// ${i.toString(16).padStart(4, '0')}: ${hex.padEnd(48, ' ')} | ${ascii}\n`;
+                        }
+                        if (content.length > 1024) {
+                            textContent += `\n// ... (${content.length - 1024} more bytes)`;
+                        }
+                    } else {
+                        // Try to decode as UTF-8 text
+                        const decoder = new TextDecoder('utf-8', { fatal: false });
+                        textContent = decoder.decode(content);
+                    }
+                } else {
+                    textContent = content;
+                }
+
+                codeEditor.setValue(textContent);
                 document.getElementById('scriptName').value = path.substring(path.lastIndexOf('/') + 1);
                 switchTab('editor');
 
@@ -1960,8 +1896,12 @@
             onSlotChanged: []
         };
 
+        // Device registry for device-specific commands
+        const deviceCommands = {}; // { deviceName: { commandName: { description, handler } } }
+        const deviceExtensions = new Set(); // Track loaded device extensions
+
         // Extension API
-        window.ChameleonAPI = {
+        window.ToolboxAPI = {
             // Register a new command
             registerCommand: function(name, description, handler) {
                 const cmdName = name.toLowerCase();
@@ -1971,6 +1911,36 @@
                 };
                 console.log('Registered command:', cmdName, 'Total commands:', Object.keys(commands));
                 logToConsole(`✓ Extension registered command: ${name}`);
+            },
+
+            // Register a device extension
+            registerDevice: function(deviceName, displayName) {
+                const devName = deviceName.toLowerCase();
+                deviceExtensions.add(devName);
+                deviceCommands[devName] = {
+                    displayName: displayName || deviceName,
+                    commands: {}
+                };
+                console.log('Registered device:', devName);
+                logToConsole(`✓ Device extension loaded: ${displayName || deviceName}`);
+            },
+
+            // Register a device-specific command
+            registerDeviceCommand: function(deviceName, commandName, description, handler) {
+                const devName = deviceName.toLowerCase();
+                const cmdName = commandName.toLowerCase();
+
+                if (!deviceCommands[devName]) {
+                    console.error(`Device '${deviceName}' not registered. Call registerDevice first.`);
+                    return;
+                }
+
+                deviceCommands[devName].commands[cmdName] = {
+                    description: description,
+                    handler: handler
+                };
+                console.log(`Registered device command: ${devName} ${cmdName}`);
+                logToConsole(`✓ ${deviceCommands[devName].displayName} registered command: ${commandName}`);
             },
 
             // Register event hooks
@@ -1999,7 +1969,8 @@
             // Access to core functions
             logToConsole: logToConsole,
             fs: null, // Will be set after fs is initialized
-            chameleonUltra: null, // Will be set after device connection
+            chameleonUltra: null, // Will be set after device connection (legacy)
+            deviceRegistry: deviceRegistry, // New device registry
 
             // Access to UI elements
             switchTab: switchTab,
@@ -2009,12 +1980,87 @@
             getTagTypeName: getTagTypeName,
             currentDir: () => currentDir,
 
-            // Constants
-            CMD_GET_BATTERY_INFO: CMD_GET_BATTERY_INFO,
-            CMD_GET_ACTIVE_SLOT: CMD_GET_ACTIVE_SLOT,
-            CMD_SET_ACTIVE_SLOT: CMD_SET_ACTIVE_SLOT,
-            CMD_GET_SLOT_INFO: CMD_GET_SLOT_INFO,
-            CMD_GET_SLOT_TAG_NICK: CMD_GET_SLOT_TAG_NICK
+            // Raw connection helpers
+            connectRawBLE: async (serviceUUID, txUUID, rxUUID, filters = []) => {
+                const transport = new BLETransport();
+                await transport.connect({
+                    serviceUUID,
+                    txCharacteristicUUID: txUUID,
+                    rxCharacteristicUUID: rxUUID,
+                    filters
+                });
+                return transport;
+            },
+
+            connectRawSerial: async (baudRate = 115200) => {
+                const transport = new SerialTransport();
+                await transport.connect({ baudRate });
+                return transport;
+            },
+
+            // Helper utilities
+            str2bytes: (str) => new TextEncoder().encode(str),
+            hex2bytes: (hex) => {
+                const cleaned = hex.replace(/[^0-9a-fA-F]/g, '');
+                const bytes = new Uint8Array(cleaned.length / 2);
+                for (let i = 0; i < bytes.length; i++) {
+                    bytes[i] = parseInt(cleaned.substr(i * 2, 2), 16);
+                }
+                return bytes;
+            },
+            bytes2hex: (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''),
+            bytes2str: (bytes) => new TextDecoder().decode(bytes),
+
+            // File operations
+            readFile: async (path) => {
+                if (!fs) throw new Error('Filesystem not initialized');
+                return await fs.readFile(path);
+            },
+
+            writeFile: async (path, data) => {
+                if (!fs) throw new Error('Filesystem not initialized');
+                return await fs.writeFile(path, data);
+            },
+
+            // Helper/Library loading
+            loadHelper: async (helperName) => {
+                const helperPath = `/helpers/${helperName}.js`;
+                if (!fs) throw new Error('Filesystem not initialized');
+
+                try {
+                    const code = await fs.readFile(helperPath);
+                    const helperFunc = new Function('API', code);
+                    await helperFunc.call(window, window.ToolboxAPI);
+                    logToConsole(`✓ Loaded helper: ${helperName}`);
+                    return true;
+                } catch (err) {
+                    logToConsole(`Error loading helper ${helperName}: ${err.message}`, true);
+                    return false;
+                }
+            },
+
+            loadScript: async (scriptPath) => {
+                // Support both /scripts/file.js and scripts/file.js formats
+                let fullPath = scriptPath;
+                if (!scriptPath.startsWith('/')) {
+                    fullPath = '/' + scriptPath;
+                }
+
+                if (!fs) throw new Error('Filesystem not initialized');
+
+                try {
+                    const code = await fs.readFile(fullPath);
+                    const scriptFunc = new Function('API', code);
+                    await scriptFunc.call(window, window.ToolboxAPI);
+                    logToConsole(`✓ Loaded script: ${scriptPath}`);
+                    return true;
+                } catch (err) {
+                    logToConsole(`Error loading script ${scriptPath}: ${err.message}`, true);
+                    return false;
+                }
+            }
+
+            // Constants will be added by device extensions (e.g., CMD_GET_BATTERY_INFO)
         };
 
         // Load extensions from /extensions folder
@@ -2044,6 +2090,57 @@
             }
         }
 
+        // Parse metadata from file headers (JSDoc, Python docstring, or Lua block comment)
+        function parseMetadata(fileContent) {
+            const metadata = {
+                name: null,
+                version: null,
+                author: null,
+                description: null,
+                source: null
+            };
+
+            let block = null;
+
+            // Try JSDoc-style block comments (/** ... */)
+            const jsdocMatch = fileContent.match(/^\/\*\*[\s\S]*?\*\//);
+            if (jsdocMatch) {
+                block = jsdocMatch[0];
+            }
+
+            // Try Python docstrings (""" ... """)
+            const pythonMatch = fileContent.match(/^"""[\s\S]*?"""/);
+            if (pythonMatch) {
+                block = pythonMatch[0];
+            }
+
+            // Try Lua block comments (--[[ ... --]])
+            const luaMatch = fileContent.match(/^--\[\[[\s\S]*?--\]\]/);
+            if (luaMatch) {
+                block = luaMatch[0];
+            }
+
+            if (block) {
+                // Extract @tags
+                const nameMatch = block.match(/@name\s+(.+)/);
+                const versionMatch = block.match(/@version\s+(.+)/);
+                const authorMatch = block.match(/@author\s+(.+)/);
+                const descMatch = block.match(/@description\s+(.+)/);
+                const sourceMatch = block.match(/@source\s+(.+)/);
+
+                if (nameMatch) metadata.name = nameMatch[1].trim();
+                if (versionMatch) metadata.version = versionMatch[1].trim();
+                if (authorMatch) metadata.author = authorMatch[1].trim();
+                if (descMatch) metadata.description = descMatch[1].trim();
+                if (sourceMatch) metadata.source = sourceMatch[1].trim();
+            }
+
+            return metadata;
+        }
+
+        // Store extension metadata
+        const extensionMetadata = new Map();
+
         async function loadExtensions() {
             try {
                 loadExtensionState();
@@ -2056,8 +2153,8 @@
                 }
 
                 // Update API references
-                window.ChameleonAPI.fs = fs;
-                window.ChameleonAPI.chameleonUltra = chameleonUltra;
+                window.ToolboxAPI.fs = fs;
+                window.ToolboxAPI.chameleonUltra = chameleonUltra;
 
                 for (const ext of extensions) {
                     if (ext.path.endsWith('.js')) {
@@ -2073,9 +2170,13 @@
                             // Read the file content
                             const code = await fs.readFile(ext.path);
 
+                            // Parse and store metadata
+                            const metadata = parseMetadata(code);
+                            extensionMetadata.set(ext.path, metadata);
+
                             // Execute extension in a context with access to API
                             const extensionFunc = new Function('API', code);
-                            await extensionFunc.call(window, window.ChameleonAPI);
+                            await extensionFunc.call(window, window.ToolboxAPI);
 
                             logToConsole(`✓ Loaded extension: ${ext.path}`);
                         } catch (err) {
@@ -2197,47 +2298,59 @@
 
         // Register built-in commands
         commands['help'] = {
-            description: 'Show available commands',
-            handler: () => {
-                    logToConsole('Available commands:');
-                    logToConsole('');
-                    logToConsole('  hw connect          - Connect to Chameleon Ultra via BLE');
-                    logToConsole('  hw disconnect       - Disconnect from device');
-                    logToConsole('  hw battery          - Show battery level');
-                    logToConsole('  hw slot list        - List available slots');
-                    logToConsole('  hw slot info        - Show current slot number');
-                    logToConsole('  hw slot details [n] - Show detailed info for slot N (or current)');
-                    logToConsole('  hw slot change <n>  - Change to slot N (1-8)');
-                    logToConsole('');
-                    logToConsole('  Shell commands:');
-                    logToConsole('  ls [path]           - List files and directories');
-                    logToConsole('  cd <dir>            - Change directory (supports .., /, relative paths)');
-                    logToConsole('  pwd                 - Print working directory');
-                    logToConsole('  cat <file>          - Display file contents');
-                    logToConsole('  mkdir <dir>         - Create directory');
-                    logToConsole('  touch <file>        - Create empty file');
-                    logToConsole('  rm <path>           - Delete file or directory (recursive)');
-                    logToConsole('  rmdir <dir>         - Delete directory (alias for rm)');
-                    logToConsole('');
-                    logToConsole('  Filesystem (explicit):');
-                    logToConsole('  fs ls [path]        - List files in directory');
-                    logToConsole('  fs cat <file>       - Display file contents');
-                    logToConsole('  fs rm <file>        - Delete file');
-                    logToConsole('');
-                    logToConsole('  clear               - Clear console');
-                    logToConsole('  reset               - Reset filesystem (deletes all files)');
-                    logToConsole('  help                - Show this help');
-
-                    // Show extension commands
-                    const extensionCommands = Object.keys(commands).filter(cmd =>
-                        !['help', 'clear', 'reset'].includes(cmd)
-                    );
-                    if (extensionCommands.length > 0) {
+            description: 'Show available commands or device-specific help (e.g., help chameleon)',
+            handler: (args) => {
+                // If device name provided, show device-specific help
+                if (args && args.length > 0) {
+                    const deviceName = args.join(' ').toLowerCase();
+                    if (deviceCommands[deviceName]) {
+                        const device = deviceCommands[deviceName];
+                        logToConsole(`${device.displayName} Commands:`);
                         logToConsole('');
-                        logToConsole('  Extension commands:');
-                        extensionCommands.forEach(cmd => {
-                            const desc = commands[cmd].description || 'No description';
-                            logToConsole(`  ${cmd.padEnd(20)} - ${desc}`);
+                        const cmds = Object.entries(device.commands).sort((a, b) => a[0].localeCompare(b[0]));
+                        if (cmds.length === 0) {
+                            logToConsole('  No commands registered');
+                        } else {
+                            cmds.forEach(([cmd, info]) => {
+                                logToConsole(`  ${deviceName} ${cmd.padEnd(20)} - ${info.description}`);
+                            });
+                        }
+                        logToConsole('');
+                        return;
+                    } else {
+                        logToConsole(`Device '${deviceName}' not found. Use 'devices' to see available devices.`, true);
+                        return;
+                    }
+                }
+
+                // Show general help
+                logToConsole('Available commands:');
+                logToConsole('');
+                logToConsole('  Core commands:');
+                logToConsole('  devices             - List available device extensions');
+                logToConsole('  help [device]       - Show commands for a specific device');
+                logToConsole('  info <path>         - Show metadata for extension or script');
+                logToConsole('  clear               - Clear console');
+                logToConsole('  reset               - Reset filesystem (deletes all files)');
+                logToConsole('');
+                logToConsole('  Shell commands:');
+                logToConsole('  ls [path]           - List files and directories');
+                logToConsole('  cd <dir>            - Change directory (supports .., /, relative paths)');
+                logToConsole('  pwd                 - Print working directory');
+                logToConsole('  cat <file>          - Display file contents');
+                logToConsole('  mkdir <dir>         - Create directory');
+                logToConsole('  touch <file>        - Create empty file');
+                logToConsole('  rm <path>           - Delete file or directory (recursive)');
+                logToConsole('  rmdir <dir>         - Delete directory (alias for rm)');
+
+                    // Show extensions
+                    if (deviceExtensions.size > 0) {
+                        logToConsole('');
+                        logToConsole('  Extensions:');
+                        Array.from(deviceExtensions).sort().forEach(deviceName => {
+                            const device = deviceCommands[deviceName];
+                            const cmdCount = Object.keys(device.commands).length;
+                            logToConsole(`  ${deviceName.padEnd(20)} - ${device.displayName} (${cmdCount} commands - use 'help ${deviceName}')`);
                         });
                     }
             }
@@ -2246,6 +2359,64 @@
         commands['clear'] = {
             description: 'Clear console',
             handler: () => clearConsole()
+        };
+
+        commands['info'] = {
+            description: 'Show metadata for extension or script (e.g., info /extensions/rfid-analyzer.js)',
+            handler: async (args) => {
+                if (!args || args.length === 0) {
+                    logToConsole('Usage: info <path>');
+                    logToConsole('Example: info /extensions/rfid-analyzer.js');
+                    logToConsole('         info /scripts/battery.py');
+                    return;
+                }
+
+                const path = args.join(' ');
+
+                try {
+                    // Check if file exists and read it
+                    const content = await fs.readFile(path);
+                    const metadata = parseMetadata(content);
+
+                    // Display metadata
+                    logToConsole(`📄 ${path}`);
+                    logToConsole('─'.repeat(60));
+
+                    if (metadata.name) {
+                        logToConsole(`  Name:        ${metadata.name}`);
+                    }
+                    if (metadata.version) {
+                        logToConsole(`  Version:     ${metadata.version}`);
+                    }
+                    if (metadata.author) {
+                        logToConsole(`  Author:      ${metadata.author}`);
+                    }
+                    if (metadata.description) {
+                        logToConsole(`  Description: ${metadata.description}`);
+                    }
+                    if (metadata.source) {
+                        logToConsole(`  Source:      ${metadata.source}`);
+                    }
+
+                    // Check if any metadata was found
+                    if (!metadata.name && !metadata.version && !metadata.author && !metadata.description && !metadata.source) {
+                        logToConsole(`  No metadata found`);
+                        logToConsole('');
+                        logToConsole('  Add metadata using JSDoc format:');
+                        logToConsole('  /**');
+                        logToConsole('   * @name My Extension');
+                        logToConsole('   * @version 1.0.0');
+                        logToConsole('   * @author Your Name');
+                        logToConsole('   * @description What this does');
+                        logToConsole('   * @source https://github.com/user/repo');
+                        logToConsole('   */');
+                    }
+
+                    logToConsole('─'.repeat(60));
+                } catch (error) {
+                    logToConsole(`Error reading ${path}: ${error.message}`, true);
+                }
+            }
         };
 
         commands['reset'] = {
@@ -2266,7 +2437,7 @@
                             <li>All extensions (they will need to be re-uploaded)</li>
                         </ul>
                         <p style="color: #facc15;">
-                            The filesystem will be reset to default with empty /helpers, /scripts, /data, and /extensions folders.
+                            The filesystem will be reset to default with empty /scripts, /data, and /extensions folders.
                         </p>
                     </div>
                 `, [
@@ -2281,35 +2452,67 @@
                             try {
                                 logToConsole('Resetting filesystem...');
 
-                                // Close and delete the database
-                                if (fs && fs.db) {
-                                    fs.db.close();
+                                if (!fs || !fs.db) {
+                                    logToConsole('Filesystem not initialized, reinitializing from scratch...');
+
+                                    // Force delete the database using DevTools approach
+                                    const dbDeletePromise = new Promise((resolve) => {
+                                        const req = indexedDB.deleteDatabase('UltraToolboxFS');
+                                        req.onsuccess = () => {
+                                            logToConsole('✓ Old database deleted');
+                                            resolve();
+                                        };
+                                        req.onerror = () => {
+                                            logToConsole('⚠️ Could not delete old database, proceeding anyway...');
+                                            resolve();
+                                        };
+                                        req.onblocked = () => {
+                                            logToConsole('⚠️ Database blocked, proceeding anyway...');
+                                            resolve();
+                                        };
+                                        // Timeout after 500ms
+                                        setTimeout(() => resolve(), 500);
+                                    });
+
+                                    await dbDeletePromise;
+                                    await initFileSystem();
+                                    logToConsole('✓ Filesystem initialized with default folders');
+                                    return;
                                 }
 
-                                const deleteRequest = indexedDB.deleteDatabase('UltraToolboxFS');
+                                // Get list of all files and directories to delete
+                                const allFiles = await fs.listFiles('/');
+                                const allDirs = await fs.listDirectories();
 
-                                deleteRequest.onsuccess = async () => {
-                                    logToConsole('✓ Filesystem deleted');
-                                    logToConsole('Reinitializing...');
+                                logToConsole(`Deleting ${allFiles.length} files and ${allDirs.length} directories...`);
 
-                                    // Reinitialize filesystem
-                                    await initFileSystem();
+                                // Delete all files
+                                for (const file of allFiles) {
+                                    await fs.deleteFile(file.path);
+                                }
 
-                                    // Refresh the file tree display
-                                    await refreshFileTree();
+                                // Delete all directories (except root)
+                                const dirsToDelete = allDirs.filter(d => d.path !== '/');
+                                for (const dir of dirsToDelete) {
+                                    await fs.remove(dir.path);
+                                }
 
-                                    logToConsole('✓ Filesystem reset complete');
-                                };
+                                logToConsole('✓ All files deleted');
 
-                                deleteRequest.onerror = (event) => {
-                                    logToConsole('Error resetting filesystem: ' + event.target.error, true);
-                                };
+                                // Recreate default directories
+                                logToConsole('Creating default directories...');
+                                await fs.mkdir('/scripts');
+                                await fs.mkdir('/data');
+                                await fs.mkdir('/extensions');
 
-                                deleteRequest.onblocked = () => {
-                                    logToConsole('Reset blocked - close all other tabs using this app', true);
-                                };
+                                // Refresh the file tree display
+                                await refreshFileTree();
+
+                                logToConsole('✓ Filesystem reset complete');
+                                logToConsole('Default folders created: /scripts, /data, /extensions');
                             } catch (error) {
                                 logToConsole(`Error resetting filesystem: ${error.message}`, true);
+                                logToConsole('Try running in DevTools console: indexedDB.deleteDatabase("UltraToolboxFS")');
                             }
                         }
                     }
@@ -2353,7 +2556,39 @@
 
             console.log('Parsing command:', cmd, 'Args:', argv.slice(1));
 
-            // Check registered commands first (includes extensions)
+            // Check device-specific commands first (e.g., "chameleonultra battery")
+            if (deviceCommands[cmd]) {
+                const deviceName = cmd;
+                const device = deviceCommands[deviceName];
+
+                // If no subcommand provided, show help for this device
+                if (!argv[1]) {
+                    logToConsole(`${device.displayName} Commands:`);
+                    logToConsole('');
+                    const cmds = Object.entries(device.commands).sort((a, b) => a[0].localeCompare(b[0]));
+                    if (cmds.length === 0) {
+                        logToConsole('  No commands registered');
+                    } else {
+                        cmds.forEach(([cmdName, info]) => {
+                            logToConsole(`  ${deviceName} ${cmdName.padEnd(20)} - ${info.description}`);
+                        });
+                    }
+                    logToConsole('');
+                    return;
+                }
+
+                // Execute the subcommand
+                const deviceCmd = argv[1].toLowerCase();
+                if (device.commands[deviceCmd]) {
+                    await device.commands[deviceCmd].handler(argv.slice(2));
+                    return;
+                } else {
+                    logToConsole(`Unknown ${device.displayName} command: ${argv[1]}. Use 'help ${deviceName}' to see available commands.`, true);
+                    return;
+                }
+            }
+
+            // Check registered commands (includes extensions)
             if (commands[cmd]) {
                 await commands[cmd].handler(argv.slice(1));
                 return;
@@ -2499,131 +2734,6 @@
                 return;
             }
 
-            // Hardware commands (hw)
-            if (cmd === 'hw') {
-                if (!argv[1]) {
-                    logToConsole('Usage: hw <subcommand>');
-                    logToConsole('Try: hw connect, hw disconnect, hw battery, hw slot');
-                    return;
-                }
-
-                const subcmd = argv[1].toLowerCase();
-
-                if (subcmd === 'connect') {
-                    document.getElementById('connectBleButton').click();
-                } else if (subcmd === 'disconnect') {
-                    if (chameleonUltra) {
-                        await chameleonUltra.disconnect();
-                        logToConsole('✓ Disconnected');
-                    } else {
-                        logToConsole('Not connected', true);
-                    }
-                } else if (subcmd === 'battery') {
-                    if (!chameleonUltra) {
-                        logToConsole('Not connected. Use: hw connect', true);
-                        return;
-                    }
-                    const battery = await chameleonUltra.cmd(CMD_GET_BATTERY_INFO);
-                    if (battery.status === 0x68) {
-                        const voltage = (battery.data[0] | (battery.data[1] << 8)) / 1000;
-                        const percent = battery.data[2];
-                        logToConsole(`Battery: ${voltage.toFixed(2)}V (${percent}%)`);
-                    } else {
-                        logToConsole(`Error reading battery: Status ${battery.status}`, true);
-                    }
-                } else if (subcmd === 'slot') {
-                    if (!argv[2]) {
-                        logToConsole('Usage: hw slot <list|info|change|details>');
-                        return;
-                    }
-                    const slotCmd = argv[2].toLowerCase();
-                    if (slotCmd === 'list') {
-                        logToConsole('Slots: 1-8 (use "hw slot change <n>" to switch)');
-                    } else if (slotCmd === 'info') {
-                        if (!chameleonUltra) {
-                            logToConsole('Not connected. Use: hw connect', true);
-                            return;
-                        }
-                        const slot = await chameleonUltra.cmd(CMD_GET_ACTIVE_SLOT);
-                        if (slot.status === 0x68) {
-                            logToConsole(`Current slot: ${slot.data[0] + 1}`);
-                        } else {
-                            logToConsole(`Error reading slot: Status ${slot.status}`, true);
-                        }
-                    } else if (slotCmd === 'details') {
-                        if (!chameleonUltra) {
-                            logToConsole('Not connected. Use: hw connect', true);
-                            return;
-                        }
-
-                        // Get slot number (current if not specified)
-                        let slotNum;
-                        if (argv[3]) {
-                            slotNum = parseInt(argv[3]);
-                            if (slotNum < 1 || slotNum > 8) {
-                                logToConsole('Slot must be 1-8', true);
-                                return;
-                            }
-                        } else {
-                            const currentSlot = await chameleonUltra.cmd(CMD_GET_ACTIVE_SLOT);
-                            if (currentSlot.status !== 0x68) {
-                                logToConsole('Error reading current slot', true);
-                                return;
-                            }
-                            slotNum = currentSlot.data[0] + 1;
-                        }
-
-                        // Get slot info (tag types for all slots)
-                        const slotInfo = await chameleonUltra.cmd(CMD_GET_SLOT_INFO);
-                        if (slotInfo.status !== 0x68) {
-                            logToConsole('Error reading slot info', true);
-                            return;
-                        }
-
-                        // Parse slot data (HF and LF tag types, 2 bytes each, big-endian)
-                        const slotIndex = (slotNum - 1) * 4;
-                        const hfType = (slotInfo.data[slotIndex] << 8) | slotInfo.data[slotIndex + 1];
-                        const lfType = (slotInfo.data[slotIndex + 2] << 8) | slotInfo.data[slotIndex + 3];
-
-                        // Get nickname (TagSenseType: HF=2, LF=1)
-                        const nickname = await chameleonUltra.cmd(CMD_GET_SLOT_TAG_NICK, new Uint8Array([slotNum - 1, 2])); // 2 = HF
-                        let nickStr = 'Unnamed';
-                        if (nickname.status === 0x68 && nickname.data.length > 0) {
-                            nickStr = new TextDecoder().decode(nickname.data);
-                        }
-
-                        logToConsole(`Slot ${slotNum}: ${nickStr}`);
-                        logToConsole(`  HF: ${getTagTypeName(hfType)}`);
-                        logToConsole(`  LF: ${getTagTypeName(lfType)}`);
-                    } else if (slotCmd === 'change') {
-                        if (!argv[3]) {
-                            logToConsole('Usage: hw slot change <1-8>');
-                            return;
-                        }
-                        if (!chameleonUltra) {
-                            logToConsole('Not connected. Use: hw connect', true);
-                            return;
-                        }
-                        const slotNum = parseInt(argv[3]);
-                        if (slotNum < 1 || slotNum > 8) {
-                            logToConsole('Slot must be 1-8', true);
-                            return;
-                        }
-                        const result = await chameleonUltra.cmd(CMD_SET_ACTIVE_SLOT, new Uint8Array([slotNum - 1]));
-                        if (result.status === 0x68) {
-                            logToConsole(`✓ Changed to slot ${slotNum}`);
-                            // Trigger extension hooks
-                            window.ChameleonAPI._trigger('onSlotChanged', slotNum);
-                        } else {
-                            logToConsole(`Error changing slot: Status ${result.status}`, true);
-                        }
-                    }
-                } else {
-                    logToConsole(`Unknown hw subcommand: ${subcmd}`, true);
-                }
-                return;
-            }
-
             // Filesystem commands (fs)
             if (cmd === 'fs') {
                 if (!argv[1]) {
@@ -2701,10 +2811,21 @@
             // Command completion (first word)
             if (argv.length === 1 && !textBeforeCursor.endsWith(' ')) {
                 const partial = argv[0].toLowerCase();
-                const allCommands = [
-                    'help', 'clear', 'ls', 'cd', 'pwd', 'cat', 'rm', 'rmdir', 'mkdir', 'touch',
-                    'hw', 'hf', 'fs', ...Object.keys(commands)
-                ];
+
+                // Build list of all available commands (removing duplicates)
+                const shellCommands = ['ls', 'cd', 'pwd', 'cat', 'rm', 'rmdir', 'mkdir', 'touch', 'fs'];
+                const builtInCommands = ['help', 'clear', 'reset', 'devices'];
+                const extensionCommands = Object.keys(commands);
+                const deviceNames = Array.from(deviceExtensions);
+
+                // Combine and deduplicate
+                const allCommands = [...new Set([
+                    ...builtInCommands,
+                    ...shellCommands,
+                    ...extensionCommands,
+                    ...deviceNames
+                ])];
+
                 const matches = allCommands.filter(cmd => cmd.startsWith(partial));
 
                 if (matches.length === 1) {
@@ -2716,42 +2837,38 @@
                 return;
             }
 
-            // Subcommand completion for hw/hf commands
+            // Second word completion
             if (argv.length === 2 && !textBeforeCursor.endsWith(' ')) {
-                const cmd = argv[0].toLowerCase();
+                const firstWord = argv[0].toLowerCase();
                 const partial = argv[1].toLowerCase();
 
-                let subcommands = [];
-                if (cmd === 'hw') {
-                    subcommands = ['connect', 'disconnect', 'battery', 'slot'];
-                } else if (cmd === 'hf') {
-                    subcommands = ['ntag'];
+                // Help command - autocomplete device names
+                if (firstWord === 'help') {
+                    const deviceNames = Array.from(deviceExtensions);
+                    const matches = deviceNames.filter(name => name.startsWith(partial));
+
+                    if (matches.length === 1) {
+                        inputElement.value = 'help ' + matches[0];
+                        inputElement.setSelectionRange(inputElement.value.length, inputElement.value.length);
+                    } else if (matches.length > 1) {
+                        logToConsole('Available devices: ' + matches.join(', '));
+                    }
+                    return;
                 }
 
-                const matches = subcommands.filter(sub => sub.startsWith(partial));
+                // Device command completion (e.g., "chameleon bat" -> "chameleon battery")
+                if (deviceCommands[firstWord]) {
+                    const cmdNames = Object.keys(deviceCommands[firstWord].commands);
+                    const matches = cmdNames.filter(cmd => cmd.startsWith(partial));
 
-                if (matches.length === 1) {
-                    inputElement.value = cmd + ' ' + matches[0] + ' ';
-                    inputElement.setSelectionRange(inputElement.value.length, inputElement.value.length);
-                } else if (matches.length > 1) {
-                    logToConsole('Possible subcommands: ' + matches.join(', '));
+                    if (matches.length === 1) {
+                        inputElement.value = firstWord + ' ' + matches[0] + ' ';
+                        inputElement.setSelectionRange(inputElement.value.length, inputElement.value.length);
+                    } else if (matches.length > 1) {
+                        logToConsole('Possible commands: ' + matches.join(', '));
+                    }
+                    return;
                 }
-                return;
-            }
-
-            // Third-level completion for "hw slot" commands
-            if (argv.length === 3 && argv[0].toLowerCase() === 'hw' && argv[1].toLowerCase() === 'slot' && !textBeforeCursor.endsWith(' ')) {
-                const partial = argv[2].toLowerCase();
-                const slotCommands = ['list', 'info', 'change', 'details'];
-                const matches = slotCommands.filter(sub => sub.startsWith(partial));
-
-                if (matches.length === 1) {
-                    inputElement.value = 'hw slot ' + matches[0] + ' ';
-                    inputElement.setSelectionRange(inputElement.value.length, inputElement.value.length);
-                } else if (matches.length > 1) {
-                    logToConsole('Possible commands: ' + matches.join(', '));
-                }
-                return;
             }
 
             // Path completion
